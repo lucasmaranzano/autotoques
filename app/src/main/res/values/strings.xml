@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AutoToques</string>
+    <string name="accessibility_description">AutoToques usa este permiso para grabar tus toques en la pantalla y reproducirlos a la hora que programes (tocar, deslizar, Atrás, Inicio y Recientes). No lee el contenido de las apps ni envía datos a ningún lado.</string>
+</resources>

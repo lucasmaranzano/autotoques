@@ -1,0 +1,47 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.autotoques.app'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.autotoques.app"
+        minSdk 27
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+
+    // Firma fija: así cada versión nueva se instala encima de la anterior
+    // sin perder las grabaciones.
+    signingConfigs {
+        fixed {
+            storeFile file('autotoques.keystore')
+            storePassword 'autotoques'
+            keyAlias 'autotoques'
+            keyPassword 'autotoques'
+        }
+    }
+
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.fixed
+        }
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.fixed
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        checkReleaseBuilds false
+        abortOnError false
+    }
+}
