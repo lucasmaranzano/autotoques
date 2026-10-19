@@ -12,31 +12,69 @@ import java.util.Calendar;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import java.util.Random;
 
 /** Programa las alarmas que despiertan el celular y lanzan cada grabación. */
 public final class Scheduler {
 
     public static final String[] DAY_LABELS = {"Lu", "Ma", "Mi", "Ju", "Vi", "Sá", "Do"};
+    public static final int MAX_MARGIN_MIN = 180;
+
+    /** Con horario aleatorio, nunca se programa a menos de este tiempo desde "ahora". */
+    static final long MIN_LEAD_MS = 5_000;
+
+    private static final Random RANDOM = new Random();
 
     private Scheduler() {}
 
-    /** Próximo momento de ejecución, o -1 si no hay. */
-    public static long nextTrigger(Macro m, long now) {
+    /** Margen aleatorio efectivo en ms (0 si la opción está desactivada). */
+    static long marginMs(Macro m) {
+        if (!m.randomEnabled) return 0;
+        int min = Math.max(1, Math.min(MAX_MARGIN_MIN, m.randomMarginMin));
+        return min * 60_000L;
+    }
+
+    /**
+     * Calcula la próxima ejecución. Devuelve {base, momento} o null si no hay.
+     * - base: el horario configurado (p. ej. 13:00 del día que toca).
+     * - momento: base si es exacto, o un instante al azar en [base − margen, base + margen].
+     * Cada turno (base) se ejecuta una sola vez, aunque el momento elegido haya
+     * caído antes de la hora base.
+     */
+    static long[] plan(Macro m, long now, Random rnd) {
+        long margin = marginMs(m);
         Calendar c = Calendar.getInstance();
         c.setTimeInMillis(now);
         c.set(Calendar.HOUR_OF_DAY, m.hour);
         c.set(Calendar.MINUTE, m.minute);
         c.set(Calendar.SECOND, 0);
         c.set(Calendar.MILLISECOND, 0);
-        for (int i = 0; i < 8; i++) {
-            if (c.getTimeInMillis() > now) {
-                if (m.daysMask == 0) return c.getTimeInMillis();
-                int idx = (c.get(Calendar.DAY_OF_WEEK) + 5) % 7; // lunes = 0 ... domingo = 6
-                if ((m.daysMask & (1 << idx)) != 0) return c.getTimeInMillis();
+        // Se arranca desde ayer: con margen, el turno de ayer a las 23:58 puede
+        // ejecutarse hoy a las 00:03.
+        c.add(Calendar.DAY_OF_YEAR, -1);
+        for (int i = 0; i < 10; i++) {
+            long base = c.getTimeInMillis();
+            if (base > m.lastFiredBase && dayAllowed(m, c)) {
+                if (margin == 0) {
+                    if (base > now) return new long[]{base, base};
+                } else {
+                    long lo = Math.max(base - margin, now + MIN_LEAD_MS);
+                    long hi = base + margin;
+                    if (hi >= lo) {
+                        long at = lo + (long) (rnd.nextDouble() * (hi - lo + 1));
+                        return new long[]{base, Math.min(at, hi)};
+                    }
+                }
             }
             c.add(Calendar.DAY_OF_YEAR, 1);
         }
-        return -1;
+        return null;
+    }
+
+    private static boolean dayAllowed(Macro m, Calendar c) {
+        if (m.daysMask == 0) return true;
+        int idx = (c.get(Calendar.DAY_OF_WEEK) + 5) % 7; // lunes = 0 ... domingo = 6
+        return (m.daysMask & (1 << idx)) != 0;
     }
 
     private static PendingIntent fireIntent(Context ctx, String id) {
@@ -59,14 +97,31 @@ public final class Scheduler {
         if (am != null) am.cancel(fireIntent(ctx, id));
     }
 
-    /** Programa (o reprograma) la próxima ejecución. Devuelve el momento, o -1. */
+    /**
+     * Programa (o reprograma) la próxima ejecución y la guarda en la grabación.
+     * Si ya había un momento elegido y sigue siendo futuro, se respeta (así el
+     * horario aleatorio no cambia cada vez que se abre la app).
+     * Devuelve el momento programado, o -1.
+     */
     public static long schedule(Context ctx, Macro m) {
         cancel(ctx, m.id);
-        if (!m.scheduleEnabled || m.steps.isEmpty()) return -1;
-        long t = nextTrigger(m, System.currentTimeMillis());
-        if (t < 0) return -1;
+        long now = System.currentTimeMillis();
+        long prevAt = m.plannedAt, prevBase = m.plannedBase;
+
+        if (!m.scheduleEnabled || m.steps.isEmpty()) {
+            m.plannedAt = 0;
+            m.plannedBase = 0;
+        } else if (!(m.plannedAt > now + 1000 && m.plannedBase > m.lastFiredBase)) {
+            long[] p = plan(m, now, RANDOM);
+            m.plannedBase = p == null ? 0 : p[0];
+            m.plannedAt = p == null ? 0 : p[1];
+        }
+        if (m.plannedAt != prevAt || m.plannedBase != prevBase) persist(ctx, m);
+        if (m.plannedAt <= 0) return -1;
+
         AlarmManager am = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
         if (am == null) return -1;
+        long t = m.plannedAt;
         PendingIntent op = fireIntent(ctx, m.id);
         Intent open = new Intent(ctx, MainActivity.class);
         PendingIntent show = PendingIntent.getActivity(ctx, 0, open, PendingIntent.FLAG_IMMUTABLE);
@@ -84,9 +139,28 @@ public final class Scheduler {
         return t;
     }
 
-    public static void rescheduleAll(Context ctx) {
+    /** Guarda solo los campos de programación, sin pisar otros cambios. */
+    private static void persist(Context ctx, Macro m) {
+        Macro stored = MacroStore.get(ctx, m.id);
+        if (stored == null) return;
+        stored.plannedAt = m.plannedAt;
+        stored.plannedBase = m.plannedBase;
+        MacroStore.upsert(ctx, stored);
+    }
+
+    /**
+     * Reprograma todas. Con replan = true descarta los momentos ya elegidos
+     * (se usa cuando cambia la hora o la zona horaria del celular).
+     */
+    public static void rescheduleAll(Context ctx, boolean replan) {
         List<Macro> list = MacroStore.load(ctx);
-        for (Macro m : list) schedule(ctx, m);
+        for (Macro m : list) {
+            if (replan) {
+                m.plannedAt = 0;
+                m.plannedBase = 0;
+            }
+            schedule(ctx, m);
+        }
     }
 
     public static String daysText(Macro m) {
@@ -108,6 +182,14 @@ public final class Scheduler {
         return String.format(Locale.US, "%02d:%02d", m.hour, m.minute);
     }
 
+    /** Texto "12:55 y 13:05" para un horario y un margen dados. */
+    public static String windowText(int hour, int minute, int marginMin) {
+        int base = hour * 60 + minute;
+        int lo = ((base - marginMin) % 1440 + 1440) % 1440;
+        int hi = (base + marginMin) % 1440;
+        return String.format(Locale.US, "%02d:%02d y %02d:%02d", lo / 60, lo % 60, hi / 60, hi % 60);
+    }
+
     public static String formatDate(long t) {
         return new SimpleDateFormat("EEE dd/MM HH:mm", new Locale("es", "AR")).format(new Date(t));
     }
@@ -115,8 +197,8 @@ public final class Scheduler {
     public static String describe(Macro m) {
         if (!m.scheduleEnabled) return "Sin programar";
         String s = daysText(m) + " a las " + time(m);
-        long t = nextTrigger(m, System.currentTimeMillis());
-        if (t > 0) s += "\nPróxima: " + formatDate(t);
+        if (m.randomEnabled) s += " (±" + Math.max(1, m.randomMarginMin) + " min al azar)";
+        if (m.plannedAt > System.currentTimeMillis()) s += "\nPróxima: " + formatDate(m.plannedAt);
         return s;
     }
 }

@@ -30,11 +30,13 @@ public class AlarmReceiver extends BroadcastReceiver {
         Macro m = MacroStore.get(ctx, id);
         if (m == null) return;
 
-        // Programar la siguiente ejecución antes que nada.
-        if (m.daysMask == 0) {
-            m.scheduleEnabled = false;
-            MacroStore.upsert(ctx, m);
-        }
+        // Marcar este turno como ejecutado y programar el siguiente
+        // (con horario aleatorio se sortea un momento nuevo para cada turno).
+        m.lastFiredBase = m.plannedBase > 0 ? m.plannedBase : System.currentTimeMillis();
+        m.plannedAt = 0;
+        m.plannedBase = 0;
+        if (m.daysMask == 0) m.scheduleEnabled = false;
+        MacroStore.upsert(ctx, m);
         Scheduler.schedule(ctx, m);
 
         // Encender la pantalla ya mismo.

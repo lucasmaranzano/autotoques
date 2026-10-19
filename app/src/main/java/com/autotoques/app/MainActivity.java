@@ -13,7 +13,9 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.PowerManager;
 import android.provider.Settings;
+import android.text.Editable;
 import android.text.InputType;
+import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
@@ -58,7 +60,6 @@ public class MainActivity extends Activity {
                 != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 1);
         }
-        Scheduler.rescheduleAll(this);
         handleIntent(getIntent());
     }
 
@@ -81,11 +82,14 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        // Asegura que todas tengan su próxima ejecución calculada
+        // (respeta los horarios aleatorios ya sorteados).
+        Scheduler.rescheduleAll(this, false);
         build();
         if (renameAfterRecord != null) {
             Macro m = MacroStore.get(this, renameAfterRecord);
             renameAfterRecord = null;
-            if (m != null) showRename(m, true);
+            if (m != null) showRename(m, "Grabación guardada (" + m.steps.size() + " pasos)", true);
         }
     }
 
@@ -197,10 +201,30 @@ public class MainActivity extends Activity {
             s.playNow(m.id);
         }), weight());
         row.addView(smallButton("⏰ Programar", v -> showSchedule(m)), weight());
-        row.addView(smallButton("✎", v -> showRename(m, false)));
-        row.addView(smallButton("🗑", v -> confirmDelete(m)));
         c.addView(row);
+
+        LinearLayout row2 = new LinearLayout(this);
+        row2.setOrientation(LinearLayout.HORIZONTAL);
+        row2.addView(smallButton("✎ Nombre", v -> showRename(m, "Renombrar", false)), weight());
+        row2.addView(smallButton("⧉ Duplicar", v -> duplicate(m)), weight());
+        row2.addView(smallButton("🗑 Borrar", v -> confirmDelete(m)), weight());
+        c.addView(row2);
         return c;
+    }
+
+    private void duplicate(Macro original) {
+        String base = original.name + " (copia)";
+        String name = base;
+        for (int n = 2; MacroStore.nameExists(this, name); n++) name = original.name + " (copia " + n + ")";
+        Macro copy = original.duplicate(name);
+        if (copy == null) {
+            toast("No se pudo duplicar");
+            return;
+        }
+        MacroStore.insertAfter(this, original.id, copy);
+        Scheduler.schedule(this, copy);
+        build();
+        showRename(copy, "Copia creada de «" + original.name + "»", true);
     }
 
     // =====================================================================
@@ -222,7 +246,11 @@ public class MainActivity extends Activity {
         s.startRecording();
     }
 
-    private void showRename(Macro m, boolean isNew) {
+    /**
+     * Diálogo para poner nombre. Con isNew = true ofrece pasar directo a
+     * programar (se usa al terminar una grabación y al duplicar).
+     */
+    private void showRename(Macro m, String dialogTitle, boolean isNew) {
         EditText et = new EditText(this);
         et.setText(m.name);
         et.setSelectAllOnFocus(true);
@@ -232,24 +260,30 @@ public class MainActivity extends Activity {
         box.addView(et, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
         AlertDialog.Builder b = new AlertDialog.Builder(this)
-                .setTitle(isNew ? "Grabación guardada (" + m.steps.size() + " pasos)" : "Renombrar")
+                .setTitle(dialogTitle)
                 .setView(box)
                 .setPositiveButton(isNew ? "Guardar y programar" : "Guardar", (d, w) -> {
-                    String n = et.getText().toString().trim();
-                    if (!n.isEmpty()) m.name = n;
-                    MacroStore.upsert(this, m);
+                    Macro cur = renameStored(m, et);
                     build();
-                    if (isNew) showSchedule(m);
+                    if (isNew && cur != null) showSchedule(cur);
                 })
                 .setNegativeButton(isNew ? "Solo guardar" : "Cancelar", (d, w) -> {
                     if (isNew) {
-                        String n = et.getText().toString().trim();
-                        if (!n.isEmpty()) m.name = n;
-                        MacroStore.upsert(this, m);
+                        renameStored(m, et);
                         build();
                     }
                 });
         b.show();
+    }
+
+    /** Cambia solo el nombre sobre la versión guardada (no pisa la programación). */
+    private Macro renameStored(Macro m, EditText et) {
+        Macro cur = MacroStore.get(this, m.id);
+        if (cur == null) return null;
+        String n = et.getText().toString().trim();
+        if (!n.isEmpty()) cur.name = n;
+        MacroStore.upsert(this, cur);
+        return cur;
     }
 
     private void confirmDelete(Macro m) {
@@ -294,6 +328,47 @@ public class MainActivity extends Activity {
         timeRow.addView(mp);
         v.addView(timeRow);
 
+        // Horario aleatorio
+        CheckBox random = new CheckBox(this);
+        random.setText("Horario aleatorio");
+        random.setTextSize(15);
+        random.setChecked(m.randomEnabled);
+        v.addView(random);
+        LinearLayout marginRow = new LinearLayout(this);
+        marginRow.setGravity(Gravity.CENTER_VERTICAL);
+        marginRow.addView(text("Margen: ±", 15, C_TEXT));
+        EditText margin = numberField(Math.max(1, m.randomMarginMin));
+        margin.setEms(3);
+        marginRow.addView(margin);
+        marginRow.addView(text("minutos", 15, C_TEXT));
+        v.addView(marginRow);
+        TextView randomInfo = text("", 13, C_ACCENT);
+        v.addView(randomInfo);
+
+        Runnable refreshRandom = () -> {
+            boolean on = random.isChecked();
+            margin.setEnabled(on);
+            marginRow.setAlpha(on ? 1f : 0.4f);
+            if (on) {
+                int mm = parse(margin, 5, 1, Scheduler.MAX_MARGIN_MIN);
+                randomInfo.setText("Cada ejecución se hace en un momento al azar entre "
+                        + Scheduler.windowText(hp.getValue(), mp.getValue(), mm) + ".");
+                randomInfo.setTextColor(C_ACCENT);
+            } else {
+                randomInfo.setText("Desactivado: se ejecuta a la hora exacta.");
+                randomInfo.setTextColor(C_MUTED);
+            }
+        };
+        random.setOnCheckedChangeListener((b, c) -> refreshRandom.run());
+        hp.setOnValueChangedListener((p, o, n) -> refreshRandom.run());
+        mp.setOnValueChangedListener((p, o, n) -> refreshRandom.run());
+        margin.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) { }
+            @Override public void onTextChanged(CharSequence s, int a, int b, int c) { }
+            @Override public void afterTextChanged(Editable s) { refreshRandom.run(); }
+        });
+        refreshRandom.run();
+
         // Días
         v.addView(label("Días"));
         final CheckBox[] days = new CheckBox[7];
@@ -336,17 +411,26 @@ public class MainActivity extends Activity {
                 .setTitle("Programar «" + m.name + "»")
                 .setView(sc)
                 .setPositiveButton("Guardar", (d, w) -> {
-                    m.scheduleEnabled = enabled.isChecked();
-                    m.hour = hp.getValue();
-                    m.minute = mp.getValue();
+                    // Se aplica sobre la versión guardada, por si cambió mientras
+                    // el diálogo estaba abierto (p. ej. se ejecutó).
+                    Macro cur = MacroStore.get(this, m.id);
+                    if (cur == null) return;
+                    cur.scheduleEnabled = enabled.isChecked();
+                    cur.hour = hp.getValue();
+                    cur.minute = mp.getValue();
                     int mask = 0;
                     for (int i = 0; i < 7; i++) if (days[i].isChecked()) mask |= (1 << i);
-                    m.daysMask = mask;
-                    m.initialDelaySec = parse(delay, 3, 0, 600);
-                    m.extraPauseMs = parse(pause, 0, 0, 60_000);
-                    m.goHomeFirst = home.isChecked();
-                    MacroStore.upsert(this, m);
-                    long t = Scheduler.schedule(this, m);
+                    cur.daysMask = mask;
+                    cur.initialDelaySec = parse(delay, 3, 0, 600);
+                    cur.extraPauseMs = parse(pause, 0, 0, 60_000);
+                    cur.goHomeFirst = home.isChecked();
+                    cur.randomEnabled = random.isChecked();
+                    cur.randomMarginMin = parse(margin, 5, 1, Scheduler.MAX_MARGIN_MIN);
+                    // Configuración nueva: sortear de nuevo la próxima ejecución.
+                    cur.plannedAt = 0;
+                    cur.plannedBase = 0;
+                    MacroStore.upsert(this, cur);
+                    long t = Scheduler.schedule(this, cur);
                     if (t > 0) toast("Próxima ejecución: " + Scheduler.formatDate(t));
                     else toast("Programación desactivada");
                     build();

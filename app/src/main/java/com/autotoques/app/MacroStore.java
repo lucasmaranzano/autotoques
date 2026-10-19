@@ -81,6 +81,25 @@ public final class MacroStore {
         save(ctx, list);
     }
 
+    /** Agrega una grabación justo debajo de otra (o al final si no la encuentra). */
+    public static synchronized void insertAfter(Context ctx, String afterId, Macro macro) {
+        List<Macro> list = load(ctx);
+        int pos = list.size();
+        for (int i = 0; i < list.size(); i++) {
+            if (list.get(i).id.equals(afterId)) {
+                pos = i + 1;
+                break;
+            }
+        }
+        list.add(pos, macro);
+        save(ctx, list);
+    }
+
+    public static synchronized boolean nameExists(Context ctx, String name) {
+        for (Macro m : load(ctx)) if (m.name.equalsIgnoreCase(name)) return true;
+        return false;
+    }
+
     public static synchronized void delete(Context ctx, String id) {
         List<Macro> list = load(ctx);
         for (int i = list.size() - 1; i >= 0; i--) {

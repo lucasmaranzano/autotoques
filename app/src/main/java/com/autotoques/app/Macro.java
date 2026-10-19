@@ -28,17 +28,54 @@ public class Macro {
     public int initialDelaySec = 3;
     public int extraPauseMs = 0;
 
+    /** Horario aleatorio: se ejecuta en un momento al azar dentro de ± randomMarginMin. */
+    public boolean randomEnabled = false;
+    public int randomMarginMin = 5;
+
+    // Estado interno de la programación
+    /** Momento exacto elegido para la próxima ejecución (ya incluye la variación aleatoria). */
+    public long plannedAt = 0;
+    /** Horario "base" (sin variación) al que corresponde plannedAt. */
+    public long plannedBase = 0;
+    /** Horario base de la última ejecución disparada: evita ejecutar dos veces el mismo turno. */
+    public long lastFiredBase = 0;
+
     // Último resultado
     public long lastRun = 0;
     public String lastResult = "";
 
     public static Macro create(String name) {
         Macro m = new Macro();
-        m.id = Long.toString(System.currentTimeMillis(), 36)
-                + Integer.toString(new Random().nextInt(1296), 36);
+        m.id = newId();
         m.name = name;
         m.createdAt = System.currentTimeMillis();
         return m;
+    }
+
+    static String newId() {
+        return Long.toString(System.currentTimeMillis(), 36)
+                + Integer.toString(new Random().nextInt(46656), 36);
+    }
+
+    /**
+     * Copia completamente independiente (pasos y configuración incluidos),
+     * con id nuevo y sin historial.
+     */
+    public Macro duplicate(String newName) {
+        try {
+            Macro c = fromJson(toJson());
+            c.id = newId();
+            c.name = newName;
+            c.createdAt = System.currentTimeMillis();
+            c.lastRun = 0;
+            c.lastResult = "";
+            c.plannedAt = 0;
+            c.plannedBase = 0;
+            c.lastFiredBase = 0;
+            return c;
+        } catch (JSONException e) {
+            return null;
+        }
     }
 
     /** Duración aproximada de una reproducción completa, en ms. */
@@ -130,6 +167,11 @@ public class Macro {
         o.put("goHomeFirst", goHomeFirst);
         o.put("initialDelaySec", initialDelaySec);
         o.put("extraPauseMs", extraPauseMs);
+        o.put("randomEnabled", randomEnabled);
+        o.put("randomMarginMin", randomMarginMin);
+        o.put("plannedAt", plannedAt);
+        o.put("plannedBase", plannedBase);
+        o.put("lastFiredBase", lastFiredBase);
         o.put("lastRun", lastRun);
         o.put("lastResult", lastResult);
         JSONArray a = new JSONArray();
@@ -150,6 +192,11 @@ public class Macro {
         m.goHomeFirst = o.optBoolean("goHomeFirst", true);
         m.initialDelaySec = o.optInt("initialDelaySec", 3);
         m.extraPauseMs = o.optInt("extraPauseMs", 0);
+        m.randomEnabled = o.optBoolean("randomEnabled", false);
+        m.randomMarginMin = o.optInt("randomMarginMin", 5);
+        m.plannedAt = o.optLong("plannedAt", 0);
+        m.plannedBase = o.optLong("plannedBase", 0);
+        m.lastFiredBase = o.optLong("lastFiredBase", 0);
         m.lastRun = o.optLong("lastRun", 0);
         m.lastResult = o.optString("lastResult", "");
         JSONArray a = o.optJSONArray("steps");

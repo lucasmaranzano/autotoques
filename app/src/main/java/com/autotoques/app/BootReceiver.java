@@ -8,6 +8,9 @@ import android.content.Intent;
 public class BootReceiver extends BroadcastReceiver {
     @Override
     public void onReceive(Context context, Intent intent) {
-        Scheduler.rescheduleAll(context.getApplicationContext());
+        String a = intent.getAction();
+        boolean clockChanged = Intent.ACTION_TIME_CHANGED.equals(a)
+                || Intent.ACTION_TIMEZONE_CHANGED.equals(a);
+        Scheduler.rescheduleAll(context.getApplicationContext(), clockChanged);
     }
 }

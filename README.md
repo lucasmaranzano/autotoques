@@ -43,6 +43,12 @@ Abrí la carpeta en Android Studio → *Build → Build APK(s)*.
 3. **Guardar** → ponele nombre → **Programar**: hora, días (o ninguno = una sola vez), espera inicial y pausa extra.
 4. **▶ Probar** para verificar antes de dejarlo programado.
 
+### Horario aleatorio
+En *Programar*, activá **Horario aleatorio** y elegí el margen (1 a 180 minutos). Con 13:00 y ±5, cada ejecución ocurre en un momento al azar entre 12:55 y 13:05, sorteado de nuevo para cada día. La tarjeta muestra la hora exacta que salió para la próxima. Cada turno se ejecuta una sola vez, aunque le toque antes de la hora base.
+
+### Duplicar
+**⧉ Duplicar** crea una copia independiente justo debajo, con los mismos pasos, días, horario y opciones. Al crearla te ofrece cambiarle el nombre y el horario. Si dos grabaciones coinciden en el tiempo, la segunda espera a que termine la primera.
+
 A la hora programada: se enciende la pantalla, se quita el bloqueo (si no tiene código), va a la pantalla de inicio y reproduce todo con los mismos tiempos que grabaste. Para cortarla: **Detener** en la notificación.
 
 ## Consejos

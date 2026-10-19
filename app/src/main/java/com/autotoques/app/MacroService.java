@@ -21,6 +21,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.text.SimpleDateFormat;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
@@ -61,6 +62,8 @@ public class MacroService extends AccessibilityService {
     private int runToken;
     private String pendingId;
     private int wakeToken;
+    /** Ejecuciones programadas que llegaron mientras otra estaba en curso. */
+    private final ArrayDeque<String> queue = new ArrayDeque<>();
 
     @Override
     protected void onServiceConnected() {
@@ -370,10 +373,15 @@ public class MacroService extends AccessibilityService {
             Waker.release();
             return;
         }
-        if (isBusy()) {
+        if (recording) {
             m.lastRun = System.currentTimeMillis();
-            m.lastResult = "Omitida: había otra grabación/reproducción en curso";
+            m.lastResult = "Omitida: estabas grabando en ese momento";
             MacroStore.upsert(this, m);
+            return;
+        }
+        if (playing || pendingId != null) {
+            // Otra está corriendo: esta se ejecuta apenas termine.
+            if (!queue.contains(id) && !id.equals(pendingId)) queue.add(id);
             return;
         }
         pendingId = id;
@@ -478,10 +486,16 @@ public class MacroService extends AccessibilityService {
             }
         }
         playMacro = null;
-        Waker.release();
+        if (!queue.isEmpty()) {
+            final String nextId = queue.poll();
+            handler.postDelayed(() -> runScheduled(nextId), 1500);
+        } else {
+            Waker.release();
+        }
     }
 
     public void stopPlayback() {
+        queue.clear();
         boolean wasPending = pendingId != null;
         runToken++;
         wakeToken++;
