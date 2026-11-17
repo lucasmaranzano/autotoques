@@ -3,14 +3,20 @@ package com.autotoques.app;
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.GestureDescription;
 import android.content.Intent;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Path;
 import android.graphics.PixelFormat;
+import android.graphics.Rect;
 import android.graphics.drawable.GradientDrawable;
+import android.hardware.HardwareBuffer;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.util.Base64;
+import android.view.Display;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -20,18 +26,22 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.ByteArrayOutputStream;
 import java.text.SimpleDateFormat;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * Corazón de la app. Como servicio de accesibilidad puede:
  *  - poner una capa transparente sobre la pantalla para registrar los toques,
  *  - inyectar toques/deslizamientos (dispatchGesture),
- *  - presionar Atrás / Inicio / Recientes.
+ *  - presionar Atrás / Inicio / Recientes,
+ *  - capturar la pantalla para buscar una imagen y tocar donde esté.
  */
 public class MacroService extends AccessibilityService {
 
@@ -54,6 +64,15 @@ public class MacroService extends AccessibilityService {
     private float offX, offY;
     private ArrayList<Float> cur;
     private boolean injecting;
+    private boolean cropping;
+    private CropOverlay cropView;
+
+    /** Hilo aparte para capturas y búsqueda de imagen (no traba la pantalla). */
+    private final ExecutorService bg = Executors.newSingleThreadExecutor();
+    // Recorte del paso de imagen en curso, ya decodificado.
+    private Macro.Step tplStep;
+    private int[] tplPx;
+    private int tplW, tplH;
 
     // ---- Reproducción ----
     private boolean playing;
@@ -151,7 +170,7 @@ public class MacroService extends AccessibilityService {
         }
         lastEventEnd = SystemClock.uptimeMillis();
         updateCounter();
-        toast("Grabando: usá el celular normalmente");
+        toast("Grabando. 🎯 = tocar buscando una imagen · ✔ = guardar");
     }
 
     private void onLayerTouch(MotionEvent e) {
@@ -259,6 +278,157 @@ public class MacroService extends AccessibilityService {
         updateCounter();
     }
 
+    // ---------------------------------------------------------------------
+    // Paso "buscar imagen": se captura la pantalla, el usuario recorta el
+    // botón y al reproducir se toca donde aparezca ese recorte.
+
+    private void startImageStep() {
+        if (!recording || recSteps == null || injecting || cropping) return;
+        if (Build.VERSION.SDK_INT < 30) {
+            toast("La búsqueda por imagen necesita Android 11 o más nuevo");
+            return;
+        }
+        cropping = true;
+        final long pressedAt = SystemClock.uptimeMillis();
+        // Se oculta la capa de grabación para que no salga en la captura.
+        setRecordingUiVisible(false);
+        handler.postDelayed(() -> capture((bmp, err) -> handler.post(() -> {
+            if (!recording || !cropping) {
+                if (bmp != null) bmp.recycle();
+                return;
+            }
+            if (bmp == null) {
+                toast("No se pudo capturar la pantalla (" + captureError(err) + ")");
+                endCrop();
+                return;
+            }
+            showCrop(bmp, pressedAt);
+        })), 350);
+    }
+
+    private void showCrop(final Bitmap shot, final long pressedAt) {
+        cropView = new CropOverlay(this, shot, new CropOverlay.Listener() {
+            @Override
+            public void onCrop(Rect r) {
+                String png = null;
+                try {
+                    Bitmap piece = Bitmap.createBitmap(shot, r.left, r.top, r.width(), r.height());
+                    ByteArrayOutputStream out = new ByteArrayOutputStream();
+                    piece.compress(Bitmap.CompressFormat.PNG, 100, out);
+                    png = Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP);
+                } catch (Exception ignored) {
+                }
+                float cx = r.exactCenterX(), cy = r.exactCenterY();
+                endCrop();
+                if (png == null) {
+                    toast("No se pudo guardar el recorte");
+                    return;
+                }
+                recSteps.add(Macro.Step.image(Math.max(0, pressedAt - lastEventEnd), png));
+                lastEventEnd = SystemClock.uptimeMillis();
+                updateCounter();
+                // Se toca ahí ahora también, para seguir grabando lo que viene después.
+                // (con una pequeña espera, para que la pantalla de recorte ya no esté).
+                injecting = true;
+                final Macro.Step tap = Macro.Step.gesture(0, new float[]{cx, cy, 0, cx, cy, 60});
+                handler.postDelayed(() -> {
+                    if (recording) injectDuringRecording(tap);
+                    else injecting = false;
+                }, 300);
+            }
+
+            @Override
+            public void onCancel() {
+                endCrop();
+            }
+        });
+        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                PixelFormat.TRANSLUCENT);
+        if (Build.VERSION.SDK_INT >= 28) {
+            lp.layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+        }
+        try {
+            wm.addView(cropView, lp);
+        } catch (Exception ex) {
+            cropView = null;
+            toast("No se pudo abrir el recorte: " + ex.getMessage());
+            endCrop();
+        }
+    }
+
+    private void endCrop() {
+        if (cropView != null) {
+            try { wm.removeViewImmediate(cropView); } catch (Exception ignored) { }
+            cropView = null;
+        }
+        cropping = false;
+        if (recording) setRecordingUiVisible(true);
+    }
+
+    private void setRecordingUiVisible(boolean visible) {
+        int v = visible ? View.VISIBLE : View.GONE;
+        if (touchLayer != null) touchLayer.setVisibility(v);
+        if (bar != null) bar.setVisibility(v);
+        setLayerTouchable(visible);
+    }
+
+    private interface ShotCallback {
+        /** Se llama en el hilo de fondo. bmp es null si falló (err = código). */
+        void onShot(Bitmap bmp, int err);
+    }
+
+    private void capture(final ShotCallback cb) {
+        if (Build.VERSION.SDK_INT < 30) {
+            cb.onShot(null, -3);
+            return;
+        }
+        try {
+            takeScreenshot(Display.DEFAULT_DISPLAY, bg, new TakeScreenshotCallback() {
+                @Override
+                public void onSuccess(ScreenshotResult res) {
+                    Bitmap out = null;
+                    try (HardwareBuffer hb = res.getHardwareBuffer()) {
+                        Bitmap hw = Bitmap.wrapHardwareBuffer(hb, res.getColorSpace());
+                        if (hw != null) {
+                            out = hw.copy(Bitmap.Config.ARGB_8888, false);
+                            hw.recycle();
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                    cb.onShot(out, out == null ? -1 : 0);
+                }
+
+                @Override
+                public void onFailure(int errorCode) {
+                    cb.onShot(null, errorCode);
+                }
+            });
+        } catch (Throwable t) {
+            cb.onShot(null, -2);
+        }
+    }
+
+    private static String captureError(int code) {
+        switch (code) {
+            case ERROR_TAKE_SCREENSHOT_NO_ACCESSIBILITY_ACCESS:
+            case -2:
+                return "sin permiso: desactivá y volvé a activar AutoToques en Accesibilidad";
+            case ERROR_TAKE_SCREENSHOT_SECURE_WINDOW:
+                return "la app no permite capturas de pantalla";
+            case -3:
+                return "necesita Android 11 o más nuevo";
+            default:
+                return "error " + code;
+        }
+    }
+
     private void updateCounter() {
         if (counter != null) counter.setText("● " + (recSteps == null ? 0 : recSteps.size()));
     }
@@ -303,7 +473,8 @@ public class MacroService extends AccessibilityService {
         b.addView(barButton("◁", v -> recordGlobal(Macro.Step.BACK)));
         b.addView(barButton("○", v -> recordGlobal(Macro.Step.HOME)));
         b.addView(barButton("▢", v -> recordGlobal(Macro.Step.RECENTS)));
-        b.addView(barButton("Guardar", v -> stopRecording(true)));
+        b.addView(barButton("🎯", v -> startImageStep()));
+        b.addView(barButton("✔", v -> stopRecording(true)));
         b.addView(barButton("✕", v -> stopRecording(false)));
 
         barLp = new WindowManager.LayoutParams(
@@ -324,7 +495,7 @@ public class MacroService extends AccessibilityService {
         t.setText(text);
         t.setTextColor(Color.WHITE);
         t.setTextSize(16);
-        t.setPadding(dp(9), dp(10), dp(9), dp(10));
+        t.setPadding(dp(8), dp(10), dp(8), dp(10));
         if (l != null) t.setOnClickListener(l);
         return t;
     }
@@ -356,7 +527,10 @@ public class MacroService extends AccessibilityService {
         if (wm != null) {
             if (touchLayer != null) try { wm.removeView(touchLayer); } catch (Exception ignored) { }
             if (bar != null) try { wm.removeView(bar); } catch (Exception ignored) { }
+            if (cropView != null) try { wm.removeView(cropView); } catch (Exception ignored) { }
         }
+        cropView = null;
+        cropping = false;
         touchLayer = null;
         bar = null;
         counter = null;
@@ -385,7 +559,7 @@ public class MacroService extends AccessibilityService {
             return;
         }
         pendingId = id;
-        Waker.acquire(this, m.estimateMs() + 60_000);
+        Waker.acquire(this, m.maxMs() + 60_000);
         try {
             startActivity(new Intent(this, WakeActivity.class)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
@@ -427,7 +601,7 @@ public class MacroService extends AccessibilityService {
         playMacro = m;
         playIndex = 0;
         final int token = ++runToken;
-        Waker.acquire(this, m.estimateMs() + 60_000);
+        Waker.acquire(this, m.maxMs() + 60_000);
         Notif.playing(this, m.name);
 
         long delay = m.initialDelaySec * 1000L;
@@ -451,6 +625,10 @@ public class MacroService extends AccessibilityService {
 
     private void execStep(int token, Macro.Step s) {
         if (token != runToken || !playing) return;
+        if (s.type == Macro.Step.IMAGE) {
+            searchImage(token, s, SystemClock.uptimeMillis() + s.timeoutSec * 1000L, 0, 0);
+            return;
+        }
         if (s.type == Macro.Step.GESTURE) {
             boolean ok;
             try {
@@ -466,6 +644,86 @@ public class MacroService extends AccessibilityService {
             performGlobalAction(s.globalAction());
             handler.postDelayed(() -> next(token), 300);
         }
+    }
+
+    /**
+     * Captura la pantalla y busca el recorte. Si no está, reintenta hasta que
+     * se cumpla el tiempo de espera (sirve también para esperar a que cargue).
+     */
+    private void searchImage(final int token, final Macro.Step s, final long deadline,
+                             final int bestPct, final int lastErr) {
+        if (token != runToken || !playing) return;
+        if (tplStep != s) {
+            tplStep = null;
+            tplPx = null;
+            try {
+                byte[] raw = Base64.decode(s.img, Base64.DEFAULT);
+                Bitmap t = BitmapFactory.decodeByteArray(raw, 0, raw.length);
+                tplW = t.getWidth();
+                tplH = t.getHeight();
+                tplPx = new int[tplW * tplH];
+                t.getPixels(tplPx, 0, tplW, 0, 0, tplW, tplH);
+                t.recycle();
+                tplStep = s;
+            } catch (Throwable e) {
+                failPlayback("Falló en el paso " + (playIndex + 1) + ": el recorte guardado está dañado");
+                return;
+            }
+        }
+        final int[] tpl = tplPx;
+        final int tw = tplW, th = tplH;
+        capture((bmp, err) -> {
+            ImageMatcher.Result found = null;
+            if (bmp != null) {
+                try {
+                    int w = bmp.getWidth(), h = bmp.getHeight();
+                    int[] px = new int[w * h];
+                    bmp.getPixels(px, 0, w, 0, 0, w, h);
+                    found = ImageMatcher.find(px, w, h, tpl, tw, th);
+                } catch (Throwable ignored) {
+                }
+                bmp.recycle();
+            }
+            final ImageMatcher.Result r = found;
+            handler.post(() -> onSearchResult(token, s, deadline, bestPct, r, err, tw, th));
+        });
+    }
+
+    private void onSearchResult(final int token, final Macro.Step s, final long deadline, int bestPct,
+                                ImageMatcher.Result r, int err, int tw, int th) {
+        if (token != runToken || !playing) return;
+        if (r != null && r.found) {
+            float cx = r.x + tw / 2f, cy = r.y + th / 2f;
+            Macro.Step tap = Macro.Step.gesture(0, new float[]{cx, cy, 0, cx, cy, 60});
+            boolean ok;
+            try {
+                ok = dispatchGesture(buildGesture(tap), new GestureResultCallback() {
+                    @Override public void onCompleted(GestureDescription g) { next(token); }
+                    @Override public void onCancelled(GestureDescription g) { next(token); }
+                }, handler);
+            } catch (Exception ex) {
+                ok = false;
+            }
+            if (!ok) next(token);
+            return;
+        }
+        final int pct = Math.max(bestPct, r == null ? 0 : r.percent());
+        final int lastErr = r == null ? err : 0;
+        if (SystemClock.uptimeMillis() < deadline) {
+            handler.postDelayed(() -> searchImage(token, s, deadline, pct, lastErr), 700);
+            return;
+        }
+        String why = r == null
+                ? "no se pudo capturar la pantalla (" + captureError(err) + ")"
+                : "no apareció la imagen en " + s.timeoutSec + " s (parecido máximo " + pct + "%)";
+        failPlayback("Falló en el paso " + (playIndex + 1) + ": " + why);
+    }
+
+    /** Corta la reproducción y avisa con una notificación. */
+    private void failPlayback(String msg) {
+        String name = playMacro == null ? "" : playMacro.name;
+        Notif.alert(this, "«" + name + "» no terminó", msg);
+        finishPlayback(msg);
     }
 
     private void next(int token) {
@@ -486,6 +744,8 @@ public class MacroService extends AccessibilityService {
             }
         }
         playMacro = null;
+        tplStep = null;
+        tplPx = null;
         if (!queue.isEmpty()) {
             final String nextId = queue.poll();
             handler.postDelayed(() -> runScheduled(nextId), 1500);

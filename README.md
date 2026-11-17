@@ -43,6 +43,15 @@ Abrí la carpeta en Android Studio → *Build → Build APK(s)*.
 3. **Guardar** → ponele nombre → **Programar**: hora, días (o ninguno = una sola vez), espera inicial y pausa extra.
 4. **▶ Probar** para verificar antes de dejarlo programado.
 
+### Tocar buscando una imagen (🎯)
+Para botones que cambian de lugar. Mientras grabás, cuando llegues a la pantalla donde está el botón, tocá **🎯** en la barrita: se congela la pantalla y marcás con el dedo un rectángulo sobre el botón. La cruz roja muestra dónde se va a tocar (el centro del recorte). Al confirmar, la app toca ahí y seguís grabando.
+
+Al reproducir, ese paso saca una captura, busca el recorte en toda la pantalla y toca donde lo encuentre. Si todavía no apareció, reintenta durante 20 segundos (así también espera a que cargue). Si no aparece, **corta la ejecución** y deja una notificación con el parecido máximo que encontró, en vez de tocar cualquier cosa.
+
+- Recortá el botón justo, sin fondo de más, y que no incluya números o textos que cambien.
+- Busca la imagen al mismo tamaño: si cambiás el tamaño de letra/pantalla o el tema claro/oscuro, hay que recortar de nuevo.
+- Necesita Android 11+. Si al actualizar dice que no puede capturar, desactivá y volvé a activar AutoToques en Accesibilidad.
+
 ### Horario aleatorio
 En *Programar*, activá **Horario aleatorio** y elegí el margen (1 a 180 minutos). Con 13:00 y ±5, cada ejecución ocurre en un momento al azar entre 12:55 y 13:05, sorteado de nuevo para cada día. La tarjeta muestra la hora exacta que salió para la próxima. Cada turno se ejecuta una sola vez, aunque le toque antes de la hora base.
 

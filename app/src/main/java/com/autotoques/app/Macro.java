@@ -89,17 +89,44 @@ public class Macro {
         return total;
     }
 
+    /** Duración máxima posible (si cada búsqueda de imagen agota su espera), en ms. */
+    public long maxMs() {
+        long total = estimateMs();
+        for (Step s : steps) if (s.type == Step.IMAGE) total += s.timeoutSec * 1000L;
+        return total;
+    }
+
+    public int imageSteps() {
+        int n = 0;
+        for (Step s : steps) if (s.type == Step.IMAGE) n++;
+        return n;
+    }
+
     public static class Step {
         public static final int GESTURE = 0;
         public static final int BACK = 1;
         public static final int HOME = 2;
         public static final int RECENTS = 3;
+        /** Busca una imagen en la pantalla y toca en su centro, esté donde esté. */
+        public static final int IMAGE = 4;
 
         public int type;
         /** Espera (ms) entre el fin del paso anterior y el comienzo de este. */
         public long delayBefore;
         /** Puntos del trazo: x, y, t (ms desde que apoyó el dedo). Solo para GESTURE. */
         public float[] pts = new float[0];
+        /** Recorte a buscar (PNG en base64). Solo para IMAGE. */
+        public String img;
+        /** Cuántos segundos esperar a que la imagen aparezca. Solo para IMAGE. */
+        public int timeoutSec = 20;
+
+        public static Step image(long delayBefore, String pngBase64) {
+            Step s = new Step();
+            s.type = IMAGE;
+            s.delayBefore = delayBefore;
+            s.img = pngBase64;
+            return s;
+        }
 
         public static Step gesture(long delayBefore, float[] pts) {
             Step s = new Step();
@@ -117,6 +144,7 @@ public class Macro {
         }
 
         public long durationMs() {
+            if (type == IMAGE) return 1500;
             if (type != GESTURE || pts.length < 3) return 300;
             return (long) pts[pts.length - 1];
         }
@@ -139,6 +167,10 @@ public class Macro {
                 for (float v : pts) a.put(Math.round(v * 10f) / 10.0);
                 o.put("p", a);
             }
+            if (type == IMAGE) {
+                o.put("img", img);
+                o.put("to", timeoutSec);
+            }
             return o;
         }
 
@@ -146,6 +178,8 @@ public class Macro {
             Step s = new Step();
             s.type = o.optInt("t", GESTURE);
             s.delayBefore = o.optLong("d", 0);
+            s.img = o.optString("img", null);
+            s.timeoutSec = o.optInt("to", 20);
             JSONArray a = o.optJSONArray("p");
             if (a != null) {
                 s.pts = new float[a.length()];

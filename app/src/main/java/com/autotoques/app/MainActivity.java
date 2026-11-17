@@ -158,7 +158,8 @@ public class MainActivity extends Activity {
         rlp.setMargins(0, dp(4), 0, dp(4));
         root.addView(rec, rlp);
         TextView hint = text("La grabación arranca desde la pantalla de inicio. Usá la barrita flotante "
-                + "para Atrás ◁, Inicio ○ y Recientes ▢, y tocá «Guardar» al terminar.", 13, C_MUTED);
+                + "para Atrás ◁, Inicio ○ y Recientes ▢. Con 🎯 recortás un botón para que al reproducir "
+                + "se busque esa imagen y se toque donde esté. ✔ guarda.", 13, C_MUTED);
         hint.setPadding(dp(4), dp(4), dp(4), dp(12));
         root.addView(hint);
 
@@ -177,7 +178,9 @@ public class MainActivity extends Activity {
         c.addView(title(m.name));
 
         long secs = Math.round(m.estimateMs() / 1000.0);
-        c.addView(text(m.steps.size() + " pasos · ~" + secs + " s", 13, C_MUTED));
+        int imgs = m.imageSteps();
+        c.addView(text(m.steps.size() + " pasos" + (imgs > 0 ? " (" + imgs + " por imagen)" : "")
+                + " · ~" + secs + " s", 13, C_MUTED));
 
         TextView sch = text(Scheduler.describe(m), 15, m.scheduleEnabled ? C_ACCENT : C_MUTED);
         sch.setPadding(0, dp(6), 0, 0);
